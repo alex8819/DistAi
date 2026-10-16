@@ -1,0 +1,6 @@
+# patch, script e sorgenti girano anche su Linux/Pi: sempre LF, anche nei checkout Windows con autocrlf
+*.patch text eol=lf
+*.sh    text eol=lf
+*.py    text eol=lf
+gradlew text eol=lf
+*.bat   text eol=crlf

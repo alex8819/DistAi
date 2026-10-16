@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F2F4F7">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:descendantFocusability="beforeDescendants"
+        android:focusableInTouchMode="true"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <!-- STATO: a colpo d'occhio se il cluster è collegato, il modello caricato e questo telefono al lavoro -->
+        <LinearLayout
+            android:id="@+id/statusCard"
+            style="@style/Card"
+            android:orientation="vertical">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <TextView
+                    android:id="@+id/pulse"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingEnd="8dp"
+                    android:text="●"
+                    android:textColor="#9E9E9E"
+                    android:textSize="18sp" />
+                <TextView style="@style/Title" android:text="STATO DEL CLUSTER" />
+            </LinearLayout>
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="4dp"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/info"
+            style="@style/Card"
+            android:textSize="13sp" />
+
+        <!-- WORKER -->
+        <LinearLayout style="@style/Card" android:orientation="vertical">
+            <TextView style="@style/Title" android:text="Questo telefono come WORKER" />
+            <TextView
+                style="@style/Hint"
+                android:text="Mette a disposizione CPU e RAM per il calcolo. Attivalo su tutti i telefoni della rete." />
+            <Switch
+                android:id="@+id/workerSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingVertical="8dp"
+                android:text="Worker attivo" />
+            <CheckBox
+                android:id="@+id/autoStart"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Avvia il worker all'apertura dell'app" />
+            <CheckBox
+                android:id="@+id/keepScreen"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Schermo sempre acceso (evita lo standby)" />
+            <Button
+                android:id="@+id/battery"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Disattiva ottimizzazione batteria" />
+            <Button
+                android:id="@+id/freeRam"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Libera RAM (chiude le app in background)" />
+        </LinearLayout>
+
+        <!-- COORDINATORE -->
+        <LinearLayout style="@style/Card" android:orientation="vertical">
+            <TextView style="@style/Title" android:text="COORDINATORE" />
+            <TextView
+                style="@style/Hint"
+                android:text="Sceglie i nodi, carica il modello e distribuisce i layer tra i telefoni." />
+
+            <TextView
+                android:id="@+id/nodesTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Nodi trovati: 0"
+                android:textStyle="bold" />
+            <TextView
+                android:id="@+id/nodesLegend"
+                style="@style/Hint" />
+            <LinearLayout
+                android:id="@+id/nodes"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <EditText
+                    android:id="@+id/manualIp"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="IP manuale (es. 192.168.1.23)"
+                    android:inputType="text"
+                    android:textSize="14sp" />
+                <Button
+                    android:id="@+id/addIp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Aggiungi" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Modello"
+                android:textStyle="bold" />
+            <Spinner
+                android:id="@+id/model"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+            <EditText
+                android:id="@+id/customUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="…oppure URL di un file .gguf"
+                android:inputType="textUri"
+                android:textSize="14sp" />
+            <ProgressBar
+                android:id="@+id/progress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:visibility="gone" />
+            <Button
+                android:id="@+id/download"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Scarica modello" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Contesto (token): " />
+                <EditText
+                    android:id="@+id/ctx"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:inputType="number"
+                    android:text="4096" />
+            </LinearLayout>
+
+            <RadioGroup
+                android:id="@+id/mode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp">
+                <RadioButton
+                    android:id="@+id/modeSplit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="Split: un modello grande diviso tra i telefoni" />
+                <RadioButton
+                    android:id="@+id/modeReplica"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Repliche: modello copiato su ogni telefono (più utenti)" />
+            </RadioGroup>
+
+            <CheckBox
+                android:id="@+id/moeFast"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MoE veloce: 6 esperti su 8 (Qwen3 MoE: +12-25% tok/s, stessa qualità misurata)" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Coordinatore: " />
+                <Spinner
+                    android:id="@+id/coordChoice"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+            </LinearLayout>
+            <Button
+                android:id="@+id/benchBtn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Misura velocità dei nodi" />
+
+            <Button
+                android:id="@+id/coordBtn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:backgroundTint="#2E7D32"
+                android:text="Avvia LLM distribuito"
+                android:textColor="#FFFFFF" />
+            <TextView
+                android:id="@+id/apiStatus"
+                style="@style/Hint"
+                android:textIsSelectable="true" />
+            <Button
+                android:id="@+id/chatBtn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:enabled="false"
+                android:text="Apri chat" />
+        </LinearLayout>
+
+        <!-- LOG -->
+        <LinearLayout style="@style/Card" android:orientation="vertical">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <TextView
+                    style="@style/Title"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="Log" />
+                <Button
+                    android:id="@+id/clearLog"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Pulisci" />
+            </LinearLayout>
+            <TextView
+                android:id="@+id/log"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#111827"
+                android:fontFamily="monospace"
+                android:maxLines="40"
+                android:padding="8dp"
+                android:textColor="#D1FAE5"
+                android:textIsSelectable="true"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

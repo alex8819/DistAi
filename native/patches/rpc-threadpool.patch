@@ -1,0 +1,30 @@
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index e9af712..697a358 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -2682,6 +2682,25 @@ void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir
+             if (ggml_backend_set_n_threads_fn) {
+                 ggml_backend_set_n_threads_fn(backend, n_threads);
+             }
++            // DistAI: threadpool persistente. Senza, ogni graph_compute (cioe' ogni token) crea e distrugge
++            // i thread; sui telefoni ripartono su core "freddi" e a frequenza bassa.
++            // GGML_RPC_POLL = livello di polling 0..100 (default 50), GGML_RPC_CPUMASK = maschera esadecimale dei core.
++            auto tp_new = (struct ggml_threadpool * (*)(struct ggml_threadpool_params *)) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_new");
++            auto tp_set = (void (*)(ggml_backend_t, struct ggml_threadpool *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool");
++            if (tp_new && tp_set && !std::getenv("GGML_RPC_NO_THREADPOOL")) {
++                struct ggml_threadpool_params tpp = ggml_threadpool_params_default((int) n_threads);
++                const char * poll = std::getenv("GGML_RPC_POLL");
++                tpp.poll = poll ? (uint32_t) atoi(poll) : 50;
++                if (const char * mask = std::getenv("GGML_RPC_CPUMASK")) {
++                    unsigned long long m = strtoull(mask, nullptr, 16);
++                    for (int c = 0; c < 64 && c < GGML_MAX_N_THREADS; c++) tpp.cpumask[c] = (m >> c) & 1;
++                    tpp.strict_cpu = true;
++                }
++                if (struct ggml_threadpool * tp = tp_new(&tpp)) {
++                    tp_set(backend, tp);
++                    printf("  threadpool     : %zu thread, poll %u%s\n", n_threads, tpp.poll, tpp.strict_cpu ? ", strict" : "");
++                }
++            }
+         }
+     }
+ 

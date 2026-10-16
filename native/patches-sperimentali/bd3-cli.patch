@@ -1,0 +1,184 @@
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+index 39f802d..dcfbefd 100644
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -34,6 +34,7 @@ else()
+     add_subdirectory(gen-docs)
+     add_subdirectory(training)
+     add_subdirectory(diffusion)
++    add_subdirectory(bd3)
+     if (NOT GGML_BACKEND_DL)
+         add_subdirectory(convert-llama2c-to-ggml)
+         # these examples use the backends directly and cannot be built with dynamic loading
+diff --git a/examples/bd3/CMakeLists.txt b/examples/bd3/CMakeLists.txt
+new file mode 100644
+index 0000000..7531073
+--- /dev/null
++++ b/examples/bd3/CMakeLists.txt
+@@ -0,0 +1,5 @@
++set(TARGET llama-bd3-cli)
++add_executable(${TARGET} bd3-cli.cpp)
++install(TARGETS ${TARGET} RUNTIME)
++target_link_libraries(${TARGET} PRIVATE llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/examples/bd3/bd3-cli.cpp b/examples/bd3/bd3-cli.cpp
+new file mode 100644
+index 0000000..10fc565
+--- /dev/null
++++ b/examples/bd3/bd3-cli.cpp
+@@ -0,0 +1,155 @@
++// DistAI: block diffusion (BD3LM) su ggml con cache KV del prefisso.
++// Il modello e' un normale qwen2 (GGUF standard) usato con attenzione NON causale dentro il blocco e causale tra blocchi:
++// i blocchi conclusi stanno nella cache KV, ogni passo di diffusione calcola solo i token del blocco attivo.
++// uso: llama-bd3-cli -m model.gguf -p "prompt" [-n 128] [-b 32] [--thr 0.9 | --steps 32] [-t 4] [--raw]
++#include "llama.h"
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++static double now_ms() {
++    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++int main(int argc, char ** argv) {
++    std::string model_path, prompt = "Write a Python function is_prime(n).";
++    int n_new = 128, block = 32, steps = 0, n_threads = 4, n_ctx = 1024, mask_id = 151665, eos_id = 151645, eos2_id = 151643;
++    float thr = 0.9f;
++    bool raw = false, quiet = false, no_mmap = false, bench = false;
++    for (int i = 1; i < argc; i++) {
++        std::string a = argv[i];
++        auto next = [&]() { return std::string(argv[++i]); };
++        if (a == "-m") model_path = next();
++        else if (a == "-p") prompt = next();
++        else if (a == "-n") n_new = atoi(next().c_str());
++        else if (a == "-b" || a == "--block") block = atoi(next().c_str());
++        else if (a == "--thr") thr = atof(next().c_str());
++        else if (a == "--steps") { steps = atoi(next().c_str()); }
++        else if (a == "-t") n_threads = atoi(next().c_str());
++        else if (a == "-c") n_ctx = atoi(next().c_str());
++        else if (a == "--mask") mask_id = atoi(next().c_str());
++        else if (a == "--eos") { eos_id = atoi(next().c_str()); eos2_id = eos_id; }
++        else if (a == "--raw") raw = true;
++        else if (a == "-q") quiet = true;
++        else if (a == "--no-mmap") no_mmap = true;
++        else if (a == "--bench") bench = true;
++    }
++    if (model_path.empty()) { fprintf(stderr, "uso: %s -m model.gguf -p prompt\n", argv[0]); return 1; }
++    llama_log_set([](ggml_log_level, const char *, void *) {}, nullptr);
++    llama_backend_init();
++    llama_model_params mp = llama_model_default_params();
++    mp.load_mode = no_mmap ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
++    llama_model * model = llama_model_load_from_file(model_path.c_str(), mp);
++    if (!model) { fprintf(stderr, "modello non caricato\n"); return 1; }
++    llama_context_params cp = llama_context_default_params();
++    cp.n_ctx = n_ctx; cp.n_batch = 512; cp.n_ubatch = 512; cp.n_threads = n_threads; cp.n_threads_batch = n_threads;
++    cp.no_perf = true;
++    llama_context * ctx = llama_init_from_model(model, cp);
++    if (!ctx) { fprintf(stderr, "contesto non creato\n"); return 1; }
++    llama_set_causal_attn(ctx, false);  // dentro un batch tutti vedono tutti; la cache contiene solo i blocchi precedenti
++    const llama_vocab * vocab = llama_model_get_vocab(model);
++    const int n_vocab = llama_vocab_n_tokens(vocab);
++    llama_memory_t mem = llama_get_memory(ctx);
++
++    std::string text = raw ? prompt :
++        "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n" +
++        prompt + "<|im_end|>\n<|im_start|>assistant\n";
++    std::vector<llama_token> toks(text.size() + 16);
++    int n = llama_tokenize(vocab, text.c_str(), text.size(), toks.data(), toks.size(), false, true);
++    if (n < 0) { fprintf(stderr, "tokenize\n"); return 1; }
++    toks.resize(n);
++
++    llama_batch batch = llama_batch_init(512, 0, 1);
++    auto decode = [&](const llama_token * t, int len, int pos0, bool all_logits, const std::vector<llama_token> * only_masked = nullptr) {
++        batch.n_tokens = len;
++        for (int i = 0; i < len; i++) {
++            batch.token[i] = t[i]; batch.pos[i] = pos0 + i; batch.n_seq_id[i] = 1; batch.seq_id[i][0] = 0;
++            batch.logits[i] = getenv("BD3_LOGITS1") ? (i == len - 1) : only_masked ? ((*only_masked)[i] == mask_id) : (all_logits ? 1 : (i == len - 1));
++        }
++        return llama_decode(ctx, batch);
++    };
++
++    if (bench) {  // costo di un passo da `block` token con logits solo sull'ultimo / su tutte le righe, causale o no
++        std::vector<llama_token> xb(block, mask_id);
++        for (int causal = 0; causal < 2; causal++) {
++            llama_set_causal_attn(ctx, causal);
++            for (int mode = 0; mode < 3; mode++) {
++                double best = 1e9;
++                for (int r = 0; r < 4; r++) {
++                    llama_memory_seq_rm(mem, 0, 0, -1);
++                    batch.n_tokens = block;
++                    for (int i = 0; i < block; i++) { batch.token[i] = xb[i]; batch.pos[i] = i; batch.n_seq_id[i] = 1; batch.seq_id[i][0] = 0;
++                        batch.logits[i] = mode == 0 ? (i == block - 1) : mode == 1 ? 1 : 0; }
++                    double a = now_ms(); llama_decode(ctx, batch); best = std::min(best, now_ms() - a);
++                }
++                printf("BENCH causal=%d logits=%s block=%d: %.0f ms\n", causal, mode == 0 ? "last" : mode == 1 ? "all" : "none", block, best);
++            }
++        }
++        return 0;
++    }
++    double t0 = now_ms(), t_dec = 0; int nfe = 0, n_commit_pass = 0;
++    // prefisso: blocchi allineati alla fine del prompt (come il padding a sinistra del campionatore HF)
++    int P = toks.size(), nb = (P + block - 1) / block, first = P - (nb - 1) * block, pos = 0;
++    for (int b = 0; b < nb; b++) {
++        int len = b == 0 ? first : block;
++        double a = now_ms();
++        if (decode(toks.data() + pos, len, pos, false)) { fprintf(stderr, "decode prefisso\n"); return 1; }
++        t_dec += now_ms() - a; pos += len;
++    }
++    double t_prefill = now_ms() - t0;
++
++    std::vector<llama_token> out;
++    int nblocks = (n_new + block - 1) / block;
++    int per_block = steps > 0 ? std::max(1, steps / nblocks) : 0;
++    bool stop = false;
++    for (int b = 0; b < nblocks && !stop; b++) {
++        int L = std::min(block, n_new - b * block);
++        std::vector<llama_token> xb(L, mask_id);
++        int masked = L, k_fix = per_block ? (L + per_block - 1) / per_block : 0;
++        while (masked > 0) {
++            llama_memory_seq_rm(mem, 0, pos, -1);
++            double a = now_ms();
++            if (decode(xb.data(), L, pos, true, &xb)) { fprintf(stderr, "decode blocco\n"); return 1; }
++            t_dec += now_ms() - a; nfe++;
++            std::vector<std::pair<float, int>> cand;  // (confidenza, indice) dei token ancora mascherati
++            std::vector<llama_token> arg(L);
++            for (int i = 0; i < L; i++) {
++                if (xb[i] != mask_id) continue;
++                const float * lg = llama_get_logits_ith(ctx, i);
++                int am = 0; float mx = lg[0];
++                for (int v = 1; v < n_vocab; v++) if (lg[v] > mx) { mx = lg[v]; am = v; }
++                double s = 0; for (int v = 0; v < n_vocab; v++) s += std::exp(lg[v] - mx);
++                arg[i] = am; cand.push_back({(float)(1.0 / s), i});
++            }
++            std::sort(cand.begin(), cand.end(), [](auto & x, auto & y) { return x.first > y.first; });
++            int take = 0;
++            if (steps > 0) take = std::min<int>(k_fix, cand.size());
++            else { while (take < (int)cand.size() && cand[take].first >= thr) take++; if (take == 0) take = 1; }
++            for (int j = 0; j < take; j++) { xb[cand[j].second] = arg[cand[j].second]; masked--; }
++        }
++        for (int i = 0; i < L; i++) {
++            out.push_back(xb[i]);
++            if (xb[i] == eos_id || xb[i] == eos2_id) { out.pop_back(); stop = true; break; }  // <|im_end|> / <|endoftext|>
++        }
++        if (!stop) {  // il blocco concluso entra nella cache
++            llama_memory_seq_rm(mem, 0, pos, -1);
++            double a = now_ms(); decode(xb.data(), L, pos, false); t_dec += now_ms() - a; n_commit_pass++;
++            pos += L;
++        }
++    }
++    double total = now_ms() - t0;
++    if (!quiet) {
++        std::string s;
++        for (auto t : out) { char buf[256]; int m = llama_token_to_piece(vocab, t, buf, sizeof(buf), 0, true); if (m > 0) s.append(buf, m); }
++        printf("%s\n", s.c_str());
++    }
++    printf("RESULT tokens=%zu nfe=%d commit=%d prefill_ms=%.0f total_ms=%.0f tok_s=%.2f tok_per_nfe=%.2f ms_per_nfe=%.0f\n",
++           out.size(), nfe, n_commit_pass, t_prefill, total, out.size() / (total / 1000.0), (double)out.size() / std::max(1, nfe),
++           (t_dec) / std::max(1, nfe + n_commit_pass));
++    return 0;
++}

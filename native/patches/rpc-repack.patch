@@ -1,0 +1,227 @@
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -1343,6 +1343,8 @@
+     void sync_all_backends();
+     bool get_cached_file(uint64_t hash, std::vector<uint8_t> & data);
+     ggml_tensor * deserialize_tensor(struct ggml_context * ctx, const rpc_tensor * tensor);
++    void repack_weights(ggml_backend_t backend, ggml_cgraph * graph);
++    void forget_repacked(const void * begin, size_t size);
+     ggml_tensor * create_node(uint64_t id,
+                               struct ggml_context * ctx,
+                               const std::unordered_map<uint64_t, const rpc_tensor*> & tensor_ptrs,
+@@ -1366,6 +1368,10 @@
+     // computed graphs cached per backend, keyed by uid
+     std::vector<std::unordered_map<uint64_t, stored_graph>> stored_graphs;
+     std::vector<comm_state> comm_states;
++    // DistAI: weights repacked in place for the CPU repack kernels (data pointer -> tensor traits)
++    ggml_backend_buffer_t repack_buf = nullptr;
++    std::unordered_map<const void *, std::pair<void *, size_t>> repacked;
++    std::unordered_set<const void *> not_repackable;
+ };
+ 
+ void rpc_server::hello(rpc_msg_hello_rsp & response) {
+@@ -1487,6 +1493,7 @@
+             sg.second.graph = nullptr;
+         }
+     }
++    forget_repacked(ggml_backend_buffer_get_base(buffer), ggml_backend_buffer_get_size(buffer));
+     ggml_backend_buffer_free(buffer);
+     buffers.erase(buffer);
+     return true;
+@@ -1500,6 +1507,7 @@
+         GGML_LOG_ERROR("[%s] buffer not found\n", __func__);
+         return false;
+     }
++    forget_repacked(ggml_backend_buffer_get_base(buffer), ggml_backend_buffer_get_size(buffer));
+     ggml_backend_buffer_clear(buffer, request.value);
+     return true;
+ }
+@@ -1547,6 +1555,7 @@
+ 
+     LOG_DBG("[%s] buffer: %p, data: %p, offset: %" PRIu64 ", size: %" PRIu64 ", value: %u\n",
+             __func__, (void *) tensor->buffer, tensor->data, request.offset, request.size, request.value);
++    forget_repacked((const char *) tensor->data + request.offset, request.size);
+     ggml_backend_tensor_memset(tensor, request.value, request.offset, request.size);
+     return true;
+ }
+@@ -1660,6 +1669,7 @@
+         ofs.write((const char *)data, size);
+         GGML_LOG_INFO("[%s] saved to '%s'\n", __func__, cache_file.string().c_str());
+     }
++    forget_repacked((const char *) tensor->data + offset, size);
+     ggml_backend_tensor_set(tensor, data, offset, size);
+     return true;
+ }
+@@ -1721,6 +1731,7 @@
+     }
+ 
+     const void * data = input.data() + sizeof(rpc_tensor) + 4*sizeof(uint64_t);
++    forget_repacked((const char *) tensor->data + offset, (n_copies - 1) * stride + size);
+     ggml_backend_tensor_set_2d(tensor, data, offset, size, n_copies, stride, size);
+     return true;
+ }
+@@ -1783,6 +1794,7 @@
+             return false;
+         }
+     }
++    forget_repacked((const char *) tensor->data + request.offset, size);
+     ggml_backend_tensor_set(tensor, cached_file.data(), request.offset, size);
+     response.result = 1;
+     return true;
+@@ -1926,6 +1938,7 @@
+         return false;
+     }
+ 
++    forget_repacked(dst->data, ggml_nbytes(dst));
+     uint64_t src_size   = (uint64_t) ggml_nbytes(src);
+     uint64_t dst_data   = (uint64_t) dst->data;
+     uint64_t dst_base   = (uint64_t) ggml_backend_buffer_get_base(dst->buffer);
+@@ -2083,6 +2096,7 @@
+             graph->use_counts[hash_pos] = tensor_ptrs.at(id)->use_count;
+         }
+     }
++    repack_weights(backends[device], graph);
+     ggml_status status = ggml_backend_graph_compute_async(backends[device], graph);
+     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
+     sg.graph = graph;
+@@ -2106,6 +2120,129 @@
+     return true;
+ }
+ 
++// DistAI: llama.cpp uses the CPU repack kernels (CPU_REPACK buffer type) only for weights loaded locally; on an RPC server
++// the weights live in plain CPU buffers and the prompt runs on the slow generic kernels (4-5x on ARM with Q4_0).
++// Repack each weight in place the first time it shows up as src0 of a matrix multiplication and point the graph tensor
++// at a CPU_REPACK buffer, so the CPU backend picks the same kernels as a local load. GGML_RPC_REPACK=0 disables it.
++static ggml_backend_buffer_type_t rpc_cpu_repack_buft() {
++    static ggml_backend_buffer_type_t buft = []() -> ggml_backend_buffer_type_t {
++        const char * env = getenv("GGML_RPC_REPACK");
++        if (env != nullptr && strcmp(env, "0") == 0) {
++            return nullptr;
++        }
++        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU");
++        if (reg == nullptr) {
++            return nullptr;
++        }
++        auto get_extra = (ggml_backend_dev_get_extra_bufts_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_get_extra_bufts");
++        if (get_extra == nullptr) {
++            return nullptr;
++        }
++        for (ggml_backend_buffer_type_t * b = get_extra(ggml_backend_reg_dev_get(reg, 0)); b && *b; ++b) {
++            if (strcmp(ggml_backend_buft_name(*b), "CPU_REPACK") == 0) {
++                return *b;
++            }
++        }
++        return nullptr;
++    }();
++    return buft;
++}
++
++// a write over a repacked weight puts it back in the standard layout
++void rpc_server::forget_repacked(const void * begin, size_t size) {
++    const char * b = (const char *) begin;
++    const char * e = b + size;
++    bool erased = false;
++    for (auto it = repacked.begin(); it != repacked.end(); ) {
++        const char * t = (const char *) it->first;
++        if (t < e && t + it->second.second > b) {
++            it = repacked.erase(it);
++            erased = true;
++        } else {
++            ++it;
++        }
++    }
++    for (auto it = not_repackable.begin(); it != not_repackable.end(); ) {
++        const char * t = (const char *) *it;
++        it = t >= b && t < e ? not_repackable.erase(it) : std::next(it);
++    }
++    if (erased) {
++        // cached graphs point these tensors at the repack buffer
++        for (auto & sgs : stored_graphs) {
++            for (auto & sg : sgs) {
++                sg.second.graph = nullptr;
++            }
++        }
++    }
++}
++
++void rpc_server::repack_weights(ggml_backend_t backend, ggml_cgraph * graph) {
++    ggml_backend_buffer_type_t buft = rpc_cpu_repack_buft();
++    if (buft == nullptr || ggml_backend_dev_type(ggml_backend_get_device(backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
++        return;
++    }
++    if (repack_buf == nullptr) {
++        repack_buf = ggml_backend_buft_alloc_buffer(buft, 64);
++        if (repack_buf == nullptr) {
++            return;
++        }
++    }
++    auto is_weight = [](const ggml_tensor * t) {
++        return t != nullptr && t->op == GGML_OP_NONE && t->view_src == nullptr && t->buffer != nullptr && ggml_is_quantized(t->type);
++    };
++    auto is_matmul_src0 = [](const ggml_tensor * node, int j) {
++        return j == 0 && node->src[1] != nullptr && node->src[1]->type == GGML_TYPE_F32 &&
++               ((node->op == GGML_OP_MUL_MAT    && ggml_n_dims(node->src[0]) == 2) ||
++                (node->op == GGML_OP_MUL_MAT_ID && ggml_n_dims(node->src[0]) == 3));
++    };
++    // weights read by any other op (e.g. GET_ROWS on tied embeddings) keep the standard layout
++    for (int i = 0; i < graph->n_nodes; i++) {
++        ggml_tensor * node = graph->nodes[i];
++        for (int j = 0; node != nullptr && j < GGML_MAX_SRC; j++) {
++            ggml_tensor * s = node->src[j];
++            if (!is_weight(s) || is_matmul_src0(node, j)) {
++                continue;
++            }
++            if (repacked.find(s->data) != repacked.end()) {
++                GGML_LOG_ERROR("[%s] repacked weight %s used by %s: results will be wrong, restart with GGML_RPC_REPACK=0\n",
++                               __func__, s->name, ggml_op_name(node->op));
++            }
++            not_repackable.insert(s->data);
++        }
++    }
++    bool synced = false;
++    for (int i = 0; i < graph->n_nodes; i++) {
++        ggml_tensor * node = graph->nodes[i];
++        if (node == nullptr || !is_weight(node->src[0]) || !is_matmul_src0(node, 0)) {
++            continue;
++        }
++        ggml_tensor * s = node->src[0];
++        auto it = repacked.find(s->data);
++        if (it == repacked.end()) {
++            if (not_repackable.count(s->data)) {
++                continue;
++            }
++            void * extra = s->extra;
++            repack_buf->iface.init_tensor(repack_buf, s);  // sets s->extra to the repack traits, nullptr if none fits
++            if (s->extra == nullptr) {
++                s->extra = extra;
++                not_repackable.insert(s->data);
++                continue;
++            }
++            if (!synced) {
++                sync_all_backends();  // a previous graph may still be reading the weight
++                synced = true;
++            }
++            const size_t nbytes = ggml_nbytes(s);
++            std::vector<uint8_t> tmp((const uint8_t *) s->data, (const uint8_t *) s->data + nbytes);
++            repack_buf->iface.set_tensor(repack_buf, s, tmp.data(), 0, nbytes);
++            it = repacked.emplace(s->data, std::make_pair(s->extra, nbytes)).first;
++        }
++        s->extra  = it->second.first;
++        s->buffer = repack_buf;
++    }
++}
++
+ // graph compute is asynchronous; commands that read or write buffer data synchronize first
+ void rpc_server::sync_all_backends() {
+     for (ggml_backend_t backend : backends) {
+@@ -2322,6 +2459,9 @@
+     for (auto buffer : buffers) {
+         ggml_backend_buffer_free(buffer);
+     }
++    if (repack_buf != nullptr) {
++        ggml_backend_buffer_free(repack_buf);
++    }
+ }
+ 
+ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const char * cache_dir,

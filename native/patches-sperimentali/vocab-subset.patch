@@ -1,0 +1,198 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 7e69744..52b6b28 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1,4 +1,6 @@
+ #include "llama-context.h"
++#include "llama-vocab-sub.h"
++#include <cmath>
+ 
+ #include "ggml.h"
+ #include "llama-arch.h"
+@@ -82,6 +84,25 @@ static const llm_fused_op_probe llm_fused_op_dsv4_hc_post_probe = {
+     /*.n_tokens_per_seq =*/ 1,
+ };
+ 
++// DistAI: copia dei logits; con il vocabolario ridotto il grafo produce solo le colonne del sottoinsieme, qui rimesse nelle posizioni giuste (-inf altrove)
++static void distai_get_logits(ggml_backend_t backend_res, ggml_tensor * t_logits, float * out, int64_t n_rows, int64_t n_vocab) {
++    if (g_vocab_sub.active() && t_logits->ne[0] == (int64_t) g_vocab_sub.ids.size() && t_logits->ne[0] != n_vocab) {
++        const int64_t ns = t_logits->ne[0];
++        std::vector<float> tmp((size_t) (n_rows * ns));
++        ggml_backend_tensor_get_async(backend_res, t_logits, tmp.data(), 0, tmp.size() * sizeof(float));
++        ggml_backend_synchronize(backend_res);
++        for (int64_t r = 0; r < n_rows; r++) {
++            float * o = out + r * n_vocab;
++            std::fill(o, o + n_vocab, -INFINITY);
++            for (int64_t j = 0; j < ns; j++) {
++                o[g_vocab_sub.ids[j]] = tmp[r * ns + j];
++            }
++        }
++        return;
++    }
++    ggml_backend_tensor_get_async(backend_res, t_logits, out, 0, n_rows * n_vocab * sizeof(float));
++}
++
+ llama_context::llama_context(
+         const llama_model & model,
+               llama_context_params params) :
+@@ -1576,7 +1597,7 @@ int llama_context::encode(const llama_batch_ext & batch_inp) {
+         GGML_ASSERT(backend_res != nullptr);
+         GGML_ASSERT(logits.data != nullptr);
+ 
+-        ggml_backend_tensor_get_async(backend_res, t_logits, logits.data, 0, n_tokens*n_vocab*sizeof(float));
++        distai_get_logits(backend_res, t_logits, logits.data, n_tokens, n_vocab);
+     }
+ 
+     // extract embeddings
+@@ -1961,7 +1982,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+             if (n_outputs) {
+                 GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
+                 GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits.size);
+-                ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
++                distai_get_logits(backend_res, t_logits, logits_out, n_outputs, n_vocab);
+             }
+         }
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 1440601..318871b 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "llama-impl.h"
+ #include "llama-model.h"
++#include "llama-vocab-sub.h"
+ #include "llama-moe-cache.h"
+ #include "llama-batch.h"
+ #include "llama-cparams.h"
+@@ -1574,6 +1575,10 @@ ggml_tensor * llm_graph_context::build_lora_mm(
+           ggml_tensor * w,
+           ggml_tensor * cur,
+           ggml_tensor * w_s) const {
++    // DistAI: logits solo sul sottoinsieme di vocabolario (llama-vocab-sub.h)
++    if (g_vocab_sub.active() && w == g_vocab_sub.out_orig) {
++        w = g_vocab_sub.out_sub;
++    }
+     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
+ 
+     if (prec_policy) {
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 6fece10..0de5d3c 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1,4 +1,8 @@
+ #include "llama-model.h"
++#include "llama-vocab-sub.h"
++#include <cstdlib>
++#include <cstring>
++#include <algorithm>
+ 
+ #include "llama-arch.h"
+ #include "llama-ext.h"
+@@ -1555,6 +1559,67 @@ void llama_model_base::load_vocab(llama_model_loader & ml) {
+     vocab.load(ml, kv);
+ }
+ 
++llama_vocab_sub g_vocab_sub;
++
++// DistAI: costruisce il tensore di output ridotto se LLAMA_VOCAB_SUBSET e' impostata (vedi llama-vocab-sub.h)
++static void distai_build_vocab_sub(llama_model & m) {
++    const char * path = getenv("LLAMA_VOCAB_SUBSET");
++    if (!path || !*path) {
++        return;
++    }
++    if (!m.output || m.output_b || !m.output->buffer) {
++        LLAMA_LOG_WARN("%s: vocabolario ridotto non applicabile (output=%p bias=%p buffer=%p)\n", __func__, (void *) m.output, (void *) m.output_b,
++            m.output ? (void *) m.output->buffer : nullptr);
++        return;
++    }
++    ggml_tensor * out = m.output;
++    const char * bufname = ggml_backend_buffer_name(out->buffer);
++    if (!ggml_backend_buffer_is_host(out->buffer) || (bufname && strstr(bufname, "REPACK")) || out->ne[2] != 1 || out->ne[3] != 1) {
++        LLAMA_LOG_WARN("%s: vocabolario ridotto non applicabile (buffer '%s')\n", __func__, bufname ? bufname : "?");
++        return;
++    }
++    const int64_t n_vocab = out->ne[1];
++    std::vector<int32_t> ids;
++    if (FILE * f = fopen(path, "r")) {
++        long v;
++        while (fscanf(f, "%ld", &v) == 1) {
++            if (v >= 0 && v < n_vocab) {
++                ids.push_back((int32_t) v);
++            }
++        }
++        fclose(f);
++    } else {
++        LLAMA_LOG_WARN("%s: file %s non leggibile\n", __func__, path);
++        return;
++    }
++    std::sort(ids.begin(), ids.end());
++    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
++    if (ids.size() < 256 || (int64_t) ids.size() >= n_vocab) {
++        LLAMA_LOG_WARN("%s: sottoinsieme di %zu token ignorato\n", __func__, ids.size());
++        return;
++    }
++    ggml_init_params ip = { ggml_tensor_overhead() * 4, nullptr, true };
++    ggml_context * ctx = ggml_init(ip);
++    ggml_tensor * sub = ggml_new_tensor_2d(ctx, out->type, out->ne[0], (int64_t) ids.size());
++    ggml_set_name(sub, "output_sub");
++    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_cpu_buffer_type());
++    if (!buf) {
++        ggml_free(ctx);
++        return;
++    }
++    const size_t row = ggml_row_size(out->type, out->ne[0]);
++    for (size_t i = 0; i < ids.size(); i++) {
++        ggml_backend_tensor_set(sub, (const char *) out->data + (size_t) ids[i] * row, i * row, row);
++    }
++    g_vocab_sub.ids = std::move(ids);
++    g_vocab_sub.out_orig = out;
++    g_vocab_sub.out_sub = sub;
++    g_vocab_sub.ctx = ctx;
++    g_vocab_sub.buf = buf;
++    LLAMA_LOG_INFO("%s: vocabolario ridotto: %zu token su %lld, output %.1f MB invece di %.1f MB\n", __func__, g_vocab_sub.ids.size(),
++        (long long) n_vocab, ggml_backend_buffer_get_size(buf) / 1048576.0, ggml_nbytes(out) / 1048576.0);
++}
++
+ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+     const auto & split_mode   = params.split_mode;
+     const bool use_mlock      = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
+@@ -2015,6 +2080,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         }
+     }
+ 
++    distai_build_vocab_sub(*this);
++
+     return true;
+ }
+ 
+diff --git a/src/llama-vocab-sub.h b/src/llama-vocab-sub.h
+new file mode 100644
+index 0000000..7f25e8f
+--- /dev/null
++++ b/src/llama-vocab-sub.h
+@@ -0,0 +1,24 @@
++#pragma once
++
++// DistAI: vocabolario ridotto per il calcolo dei logits.
++// Con LLAMA_VOCAB_SUBSET=file (un id di token per riga) il layer di output moltiplica solo per le righe di quei token: nei modelli MoE con pochi
++// parametri attivi la matrice di output (151.936 x 2048, Q6_K, 255 MB) e' circa un quarto dei byte letti per token. I logits degli altri token
++// valgono -inf e non possono essere scelti. Stato globale: un solo modello per processo (llama-server).
++
++#include "ggml.h"
++#include "ggml-backend.h"
++
++#include <cstdint>
++#include <vector>
++
++struct llama_vocab_sub {
++    std::vector<int32_t>      ids;               // id dei token calcolati, ordinati e unici
++    ggml_tensor *             out_orig = nullptr; // pesi di output completi (model.output)
++    ggml_tensor *             out_sub  = nullptr; // righe del sottoinsieme, stesso tipo di quantizzazione
++    ggml_context *            ctx      = nullptr;
++    ggml_backend_buffer_t     buf      = nullptr;
++
++    bool active() const { return out_sub != nullptr; }
++};
++
++extern llama_vocab_sub g_vocab_sub;

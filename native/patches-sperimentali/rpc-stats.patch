@@ -1,0 +1,44 @@
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -2327,6 +2327,20 @@
+ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const char * cache_dir,
+                              socket_ptr sock) {
+     rpc_server server(backends, cache_dir);
++    // DistAI: statistiche di tempo per comando (GGML_RPC_STATS=1): tempo dentro il gestore di ogni comando e tempo in attesa del client
++    struct rpc_stats_t {
++        bool on = std::getenv("GGML_RPC_STATS") != nullptr;
++        double idle_ms = 0; double ms[RPC_CMD_COUNT] = {0}; uint64_t n[RPC_CMD_COUNT] = {0};
++        std::chrono::steady_clock::time_point t_cmd;
++        static double since(std::chrono::steady_clock::time_point a) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count(); }
++        ~rpc_stats_t() {
++            if (!on) return;
++            static const char * names[] = {"ALLOC_BUFFER","GET_ALIGNMENT","GET_MAX_SIZE","BUFFER_GET_BASE","FREE_BUFFER","BUFFER_CLEAR","SET_TENSOR","SET_TENSOR_HASH","GET_TENSOR","COPY_TENSOR","GRAPH_COMPUTE","GET_DEVICE_MEMORY","INIT_TENSOR","GET_ALLOC_SIZE","HELLO","DEVICE_COUNT","GRAPH_RECOMPUTE","MEMSET_TENSOR","SET_TENSOR_2D","GET_TENSOR_2D","COMM_INIT","COMM_ALLREDUCE","COMM_FREE","NONE"};
++            fprintf(stderr, "RPC_STATS idle_ms=%.1f", idle_ms);
++            for (int i = 0; i < RPC_CMD_COUNT; i++) if (n[i]) fprintf(stderr, " %s=%llu/%.1fms", names[i], (unsigned long long) n[i], ms[i]);
++            fprintf(stderr, "\n");
++        }
++    } rpc_stats;
+     uint8_t cmd;
+     if (!sock->recv_data(&cmd, 1)) {
+         return;
+@@ -2364,9 +2378,11 @@
+     // Activate transport upgrade using client's caps
+     sock->update_caps(req.conn_caps);
+     while (true) {
++        auto t_wait = std::chrono::steady_clock::now();
+         if (!sock->recv_data(&cmd, 1)) {
+             break;
+         }
++        if (rpc_stats.on) { rpc_stats.idle_ms += rpc_stats_t::since(t_wait); rpc_stats.t_cmd = std::chrono::steady_clock::now(); }
+         if (cmd >= RPC_CMD_COUNT) {
+             // fail fast if the command is invalid
+             GGML_LOG_ERROR("Unknown command: %d\n", cmd);
+@@ -2647,6 +2663,7 @@
+                 return;
+             }
+         }
++        if (rpc_stats.on) { rpc_stats.ms[cmd] += rpc_stats_t::since(rpc_stats.t_cmd); rpc_stats.n[cmd]++; }
+     }
+ }
+ 

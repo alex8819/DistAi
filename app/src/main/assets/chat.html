@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DistAI Chat</title>
+<style>
+  :root { --bg:#F2F4F7; --me:#1E3A5F; --ai:#FFFFFF; --txt:#111827; --muted:#6B7280; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0B1220; --ai:#1F2937; --txt:#E5E7EB; --muted:#9CA3AF; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--txt);
+         display:flex; flex-direction:column; height:100vh; }
+  #msgs { flex:1; overflow-y:auto; padding:12px; }
+  .m { max-width:88%; padding:10px 12px; border-radius:14px; margin:6px 0; white-space:pre-wrap;
+       word-wrap:break-word; line-height:1.4; font-size:15px; }
+  .user { background:var(--me); color:#fff; margin-left:auto; border-bottom-right-radius:4px; }
+  .assistant { background:var(--ai); border-bottom-left-radius:4px; box-shadow:0 1px 2px #0002; }
+  .stats { font-size:11px; color:var(--muted); margin:0 4px 8px; }
+  form { display:flex; gap:8px; padding:10px; background:var(--ai); border-top:1px solid #0001; }
+  textarea { flex:1; resize:none; border:1px solid #0002; border-radius:10px; padding:10px;
+             font:inherit; background:var(--bg); color:var(--txt); max-height:120px; }
+  button { border:0; border-radius:10px; padding:0 16px; background:#2E7D32; color:#fff; font-weight:600; }
+  button.stop { background:#C62828; }
+  #empty { color:var(--muted); text-align:center; margin-top:30vh; padding:0 20px; }
+</style>
+</head>
+<body>
+<div id="msgs"><div id="empty">LLM distribuito pronto.<br>Scrivi un messaggio per iniziare.</div></div>
+<form id="f">
+  <textarea id="q" rows="1" placeholder="Scrivi…"></textarea>
+  <button id="send">Invia</button>
+</form>
+<script>
+const API = new URLSearchParams(location.search).get('api') || 'http://127.0.0.1:8080';
+const msgs = document.getElementById('msgs'), q = document.getElementById('q'), send = document.getElementById('send');
+const history = [];
+let ctrl = null;
+
+function bubble(role, text) {
+  document.getElementById('empty')?.remove();
+  const d = document.createElement('div');
+  d.className = 'm ' + role; d.textContent = text;
+  msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+  return d;
+}
+
+async function ask(text) {
+  history.push({ role: 'user', content: text });
+  bubble('user', text);
+  const out = bubble('assistant', '…');
+  const stats = document.createElement('div'); stats.className = 'stats'; msgs.appendChild(stats);
+  ctrl = new AbortController();
+  send.textContent = 'Stop'; send.classList.add('stop');
+  let answer = '', t0 = performance.now(), n = 0;
+  try {
+    const r = await fetch(API + '/v1/chat/completions', {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history, stream: true, timings_per_token: false })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + await r.text());
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') continue;
+        const j = JSON.parse(data);
+        const delta = j.choices?.[0]?.delta?.content;
+        if (delta) { answer += delta; n++; out.textContent = answer; msgs.scrollTop = msgs.scrollHeight; }
+        if (j.timings) {
+          stats.textContent = `${j.timings.predicted_n} token · ${j.timings.predicted_per_second.toFixed(1)} tok/s · prompt ${j.timings.prompt_per_second.toFixed(1)} tok/s`;
+        }
+      }
+      if (!stats.textContent && n) stats.textContent = `${n} token · ${(n / ((performance.now() - t0) / 1000)).toFixed(1)} tok/s`;
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') out.textContent = (answer ? answer + '\n\n' : '') + '⚠️ ' + e.message;
+  }
+  if (answer) history.push({ role: 'assistant', content: answer });
+  ctrl = null; send.textContent = 'Invia'; send.classList.remove('stop');
+}
+
+document.getElementById('f').onsubmit = e => {
+  e.preventDefault();
+  if (ctrl) { ctrl.abort(); return; }
+  const t = q.value.trim(); if (!t) return;
+  q.value = ''; ask(t);
+};
+q.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } });
+</script>
+</body>
+</html>

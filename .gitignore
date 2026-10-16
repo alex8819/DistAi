@@ -1,0 +1,14 @@
+.gradle/
+build/
+app/build/
+local.properties
+native/build-*
+native/unbuffer.o
+native/llama.cpp/
+*.apk
+.kotlin/
+!native/build-android.sh
+!native/build-pc.py
+!native/build-diffusion-android.sh
+__pycache__/
+native/dist-diffusion/
