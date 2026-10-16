@@ -67,6 +67,88 @@ and its **RPC** backend.
 - The RPC protocol has no authentication or encryption: use it on a trusted private network only.
 - Dense 27B/70B models at 50-100 tok/s are out of reach for phones (see [`ROADMAP.md`](ROADMAP.md)).
 
+## Step by step: a 14B model on three phones over USB
+
+This is the exact procedure used to run **Qwen2.5-Coder-14B-Instruct (Q3_K_M, 7.3 GB)** split evenly over three phones, driven from a Linux PC
+through the USB cable only (`adb forward`, no Wi-Fi). Speed is not the goal here (a split model is slow); it is a demo that the model really lives in the phones' RAM.
+
+**You need:** a Linux PC with ~12 GB of free disk, Python 3, `adb` ([platform-tools](https://developer.android.com/tools/releases/platform-tools)),
+cmake and a C/C++ compiler; three ARM64 phones with at least ~3 GB of *free* RAM each; USB cables (a powered hub if the PC has few ports).
+
+**1. Enable USB debugging on every phone**
+1. *Settings → About phone* → tap **Build number** 7 times (developer mode).
+2. *Settings → Developer options* → turn on **USB debugging** (and **Stay awake** while charging). On Xiaomi/MIUI also turn on *Install via USB*.
+3. Plug the phone in and accept the "Allow USB debugging?" prompt (tick *Always allow*).
+4. Check that every phone is listed as `device` (not `unauthorized`) and note the serials:
+   ```bash
+   adb devices -l
+   ```
+
+**2. Build and install the APK on every phone**
+```bash
+./gradlew assembleDebug                      # APK in app/build/outputs/apk/debug/app-debug.apk
+adb -s SERIAL_1 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s SERIAL_2 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s SERIAL_3 install -r app/build/outputs/apk/debug/app-debug.apk
+```
+If `install -r` fails with a signature mismatch, uninstall first: `adb -s SERIAL uninstall com.distai.app`.
+(The ARM binaries must already be in `app/src/main/jniLibs`: run `./native/build-android.sh` once, see [Build](#build).)
+
+**3. Start the worker on every phone**
+Open the **DistAI** app on each phone. It starts a foreground service with an RPC worker on port `50052`.
+Grant the notification permission, disable battery optimization for the app, keep the phone charging, and tap **Free RAM** before loading a big model.
+Do **not** start the coordinator on any phone: here the PC is the coordinator.
+
+**4. Build the PC side**
+```bash
+git clone https://github.com/ggml-org/llama.cpp native/llama.cpp
+git -C native/llama.cpp checkout 69f201a     # same commit as the phones: the RPC protocol must match
+python native/build-pc.py                    # llama-server in native/build-pc/bin (patches applied automatically)
+```
+
+**5. Download the model**
+```bash
+mkdir -p ~/distai-models
+curl -L -C - -o ~/distai-models/qwen2.5-coder-14b-instruct-q3_k_m.gguf \
+  https://huggingface.co/Qwen/Qwen2.5-Coder-14B-Instruct-GGUF/resolve/main/qwen2.5-coder-14b-instruct-q3_k_m.gguf
+```
+`-C -` resumes an interrupted download. The file must be exactly 7339203968 bytes.
+
+**6. Launch the cluster**
+```bash
+export SERIAL_XIAOMI=SERIAL_1 SERIAL_HUAWEI=SERIAL_2 SERIAL_SAMSUNG=SERIAL_3   # names are only labels: any three phones work
+python3 tools/video14b.py
+```
+`tools/video14b.py` does the following:
+- creates an `adb forward` from the PC to the RPC worker of each phone (`127.0.0.1:50151..50153` → phone `:50052`);
+- starts `llama-server` on the PC (`:8090`) with `-ngl 49 -ts 1,1,1` and the embedding/output tensors kept on the CPU: all 48 layers go to the phones, one third each (~2.3 GB per phone),
+  so only the small hidden state crosses the cable for each token;
+- starts the PC dashboard on `http://127.0.0.1:8099`.
+
+The weights travel over USB while `llama-server` loads the model; the script prints `PRONTO` when `/health` answers. You can watch the RAM of each phone
+filling up in the dashboard. Use another model with `python3 tools/video14b.py other-model.gguf` (file in `~/distai-models`), or another `llama-server` with `LLAMA_SERVER=/path/to/llama-server`.
+
+**7. Generate**
+- Open **http://127.0.0.1:8099/**: for each phone it shows real CPU and RAM (read with `adb`), and the text streams as the cluster writes it.
+- Or use the OpenAI-compatible API directly:
+  ```bash
+  curl http://127.0.0.1:8090/v1/chat/completions -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"Write a Python function that computes the primes up to n."}],"max_tokens":200}'
+  ```
+
+**8. Stop**
+```bash
+pkill -x llama-server; pkill -f tools/dashboard.py
+```
+Close the app on the phones to free their RAM.
+
+**Troubleshooting**
+- `Failed to create server socket` in the phone's `rpc.log` is harmless: the app's worker already owns port `50052` and the script uses that one.
+- A phone is shown as *off* in the dashboard: check `adb devices`, then that the app is running (the worker is the `librpcserver` process).
+- The model does not fit: lower the context (`-c`) or use a smaller quantization; keep ~1.5-2 GB per phone for Android (see [How much model fits](#how-much-model-fits)).
+- If a cable is unplugged the `adb forward` disappears: stop and run `tools/video14b.py` again (the workers keep the weights in their cache, so the second start is faster).
+- Never put serials, IPs or home paths in commits: this repository is public.
+
 ## Documentation
 
 | File | Contents |

@@ -9,6 +9,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "qwen2.5-coder-14b-instruct-q3_k_m.gguf"
 NODES = [("xiaomi", 50151, "c0", 2), ("huawei", 50152, "f0", 4), ("samsung", 50153, "f0", 4)]  # (telefono, porta sul PC, core, thread)
 LOGDIR = os.environ.get("VIDEO_LOGDIR", "/tmp")
+# llama-server del PC: LLAMA_SERVER, altrimenti build-x86c se esiste, altrimenti quello di native/build-pc.py
+PCBIN = os.environ.get("LLAMA_SERVER") or next(
+    (p for p in (distrun.PCBIN, os.path.join(HERE, "..", "native", "build-pc", "bin", "llama-server")) if os.path.exists(p)), distrun.PCBIN)
 
 
 def main():
@@ -16,7 +19,7 @@ def main():
     for dev, port, mask, th in NODES:
         distrun.start_rpc(dev, port, mask, th)
     time.sleep(2)
-    cmd = [distrun.PCBIN, "-m", os.path.expanduser("~/distai-models/") + MODEL, "--rpc", ",".join(f"127.0.0.1:{p}" for _, p, _, _ in NODES),
+    cmd = [PCBIN, "-m", os.path.expanduser("~/distai-models/") + MODEL, "--rpc", ",".join(f"127.0.0.1:{p}" for _, p, _, _ in NODES),
            "-ngl", "49", "-ot", "^(output|output_norm|token_embd)[.]weight$=CPU", "-ts", "1,1,1", "-c", "4096", "-np", "1", "-t", "4",
            "--poll", "100", "--host", "127.0.0.1", "--port", "8090"]
     subprocess.Popen(cmd, stdout=open(f"{LOGDIR}/video-llama.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
