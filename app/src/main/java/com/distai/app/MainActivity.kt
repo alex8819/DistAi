@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var statusCard: View
     private lateinit var statusText: TextView
     private lateinit var pulse: TextView
+    private lateinit var clusterView: ClusterView
     private val pulseAnim by lazy {
         android.animation.ObjectAnimator.ofFloat(pulse, "alpha", 1f, 0.25f).apply {
             duration = 700; repeatCount = android.animation.ValueAnimator.INFINITE
@@ -77,6 +78,10 @@ class MainActivity : Activity() {
         statusCard = findViewById(R.id.statusCard)
         statusText = findViewById(R.id.statusText)
         pulse = findViewById(R.id.pulse)
+        clusterView = findViewById(R.id.clusterView)
+        Lang.load(this)
+        findViewById<View>(R.id.flagIt).setOnClickListener { Lang.save(this, true); render() }
+        findViewById<View>(R.id.flagEn).setOnClickListener { Lang.save(this, false); render() }
         workerSwitch = findViewById(R.id.workerSwitch)
         nodesTitle = findViewById(R.id.nodesTitle)
         nodesBox = findViewById(R.id.nodes)
@@ -165,10 +170,11 @@ class MainActivity : Activity() {
             discovery.refreshAll()
             thread(name = "stato") {
                 WorkerStats.sample()
+                CoordStats.sample()
                 localTokS = if (NodeState.apiReady) StatusServer.tokS("127.0.0.1", Native.API_PORT) ?: 0.0 else 0.0
                 runOnUiThread { render(); renderNodes() }
             }
-            window.decorView.postDelayed(this, 5000)
+            window.decorView.postDelayed(this, 2500)
         }
     }
 
@@ -219,26 +225,58 @@ class MainActivity : Activity() {
      * Card in alto: dispositivi collegati, stato del modello (caricamento / operativo con tok/s) e cosa sta facendo
      * questo telefono. Verde = modello operativo, giallo = caricamento, il pallino pulsa quando qualcosa calcola.
      */
+    private fun renderRing() {
+        val palette = intArrayOf(0xFF1E88E5.toInt(), 0xFF8E24AA.toInt(), 0xFF00A870.toInt(), 0xFFF9A825.toInt(), 0xFFE53935.toInt(), 0xFF546E7A.toInt())
+        val plan = NodeState.plan?.takeIf { NodeState.coordinatorRunning || NodeState.apiReady }
+        val segs = if (plan != null) {
+            // piano reale: MB e layer di ogni nodo; la CPU è quella misurata dal worker (-1 = dato non disponibile)
+            listOf(ClusterView.Seg(NodeState.planCoord, plan.needMb[0], plan.localLayers, CoordStats.cpuPct, palette[0])) +
+                plan.remote.mapIndexed { i, n ->
+                    val live = nodes.firstOrNull { it.endpoint == n.endpoint } ?: n
+                    ClusterView.Seg(n.name.removePrefix("PC "), plan.needMb[i + 1], plan.remoteSplit[i],
+                        if (live.clients > 0) live.cpuPct else 0, palette[(i + 1) % palette.size])
+                }
+        } else {
+            // senza piano: i pesi che ogni worker tiene davvero in RAM
+            val me = Native.localIp()
+            nodeGroups().mapIndexedNotNull { i, g ->
+                val n = g.first()
+                val mb = if (isSelf(n, me)) WorkerStats.rssMb else n.workMb
+                val cpu = if (isSelf(n, me)) WorkerStats.cpuPct else n.cpuPct
+                if (mb > 0) ClusterView.Seg(n.name.removePrefix("PC "), mb, 0, cpu, palette[i % palette.size]) else null
+            }
+        }
+        val tok = if (NodeState.apiReady) localTokS else nodes.firstOrNull { it.role == "coordinatore" && it.apiReady }?.tokS ?: 0.0
+        clusterView.set(segs, tok, if (plan != null) "${plan.layers} layer" else Lang.t("pesi nei worker", "weights in workers"))
+    }
+
     private fun renderStatus() {
+        renderRing()
+        findViewById<TextView>(R.id.statusTitle).text = Lang.t("STATO DEL CLUSTER", "CLUSTER STATUS")
+        findViewById<View>(R.id.flagIt).alpha = if (Lang.it) 1f else 0.35f
+        findViewById<View>(R.id.flagEn).alpha = if (Lang.it) 0.35f else 1f
+        findViewById<TextView>(R.id.statusTitle).text = Lang.t("STATO DEL CLUSTER", "CLUSTER STATUS")
+        findViewById<View>(R.id.flagIt).alpha = if (Lang.it) 1f else 0.35f
+        findViewById<View>(R.id.flagEn).alpha = if (Lang.it) 0.35f else 1f
         val myIp = Native.localIp()
         val others = nodeGroups().filter { g -> g.none { isSelf(it, myIp) } }
         val names = others.joinToString(", ") { g -> g.first().name.removePrefix("PC ") }
-        val devices = "📱 Dispositivi collegati: ${others.size + 1}" + if (names.isNotEmpty()) " (questo + $names)" else " (solo questo)"
+        val devices = "📱 " + Lang.t("Dispositivi collegati", "Connected devices") + ": ${others.size + 1}" + if (names.isNotEmpty()) Lang.t(" (questo + $names)", " (this + $names)") else Lang.t(" (solo questo)", " (this one only)")
         val remoteCoord = nodes.firstOrNull { it.role == "coordinatore" && !isSelf(it, myIp) }
         val tok = { t: Double -> if (t > 0) " · ${"%.1f".format(t)} tok/s" else "" }
         val (model, color) = when {
-            NodeState.apiReady -> "🧠 Modello operativo ✓ · ${NodeState.coordinatorInfo}${tok(localTokS)}" to 0xFFE8F5E9.toInt()
-            NodeState.coordinatorRunning -> "⏳ Caricamento del modello sui nodi… · ${NodeState.coordinatorInfo}" to 0xFFFFF8E1.toInt()
+            NodeState.apiReady -> "🧠 " + Lang.t("Modello operativo", "Model running") + " ✓ · ${NodeState.coordinatorInfo}${tok(localTokS)}" to 0xFFE8F5E9.toInt()
+            NodeState.coordinatorRunning -> "⏳ " + Lang.t("Caricamento del modello sui nodi…", "Loading the model onto the nodes…") + " · ${NodeState.coordinatorInfo}" to 0xFFFFF8E1.toInt()
             remoteCoord?.apiReady == true ->
-                "🧠 Modello operativo ✓ su ${remoteCoord.name}${tok(remoteCoord.tokS)}" to 0xFFE8F5E9.toInt()
-            remoteCoord != null -> "⏳ ${remoteCoord.name} sta caricando il modello" to 0xFFFFF8E1.toInt()
-            else -> "⚪ Nessun modello avviato" to 0xFFFFFFFF.toInt()
+                "🧠 " + Lang.t("Modello operativo", "Model running") + " ✓ · ${remoteCoord.name}${tok(remoteCoord.tokS)}" to 0xFFE8F5E9.toInt()
+            remoteCoord != null -> "⏳ ${remoteCoord.name} " + Lang.t("sta caricando il modello", "is loading the model") to 0xFFFFF8E1.toInt()
+            else -> "⚪ " + Lang.t("Nessun modello avviato", "No model started") to 0xFFFFFFFF.toInt()
         }
         val busy = WorkerStats.clients > 0
         val worker = when {
-            !NodeState.workerRunning -> "⏸ Worker di questo telefono spento"
-            busy -> "⚙️ Questo telefono lavora per il cluster · pesi ${gb(WorkerStats.rssMb)} · CPU ${WorkerStats.cpuPct}%"
-            else -> "💤 Worker pronto, in attesa di un coordinatore"
+            !NodeState.workerRunning -> "⏸ " + Lang.t("Worker di questo telefono spento", "This phone's worker is off")
+            busy -> "⚙️ " + Lang.t("Questo telefono lavora per il cluster · pesi", "This phone is working for the cluster · weights") + " ${gb(WorkerStats.rssMb)} · CPU ${WorkerStats.cpuPct}%"
+            else -> "💤 " + Lang.t("Worker pronto, in attesa di un coordinatore", "Worker ready, waiting for a coordinator")
         }
         // telefoni che il PC espone col ponte USB (tools/pcnode.py): funzionano, ma ogni token passa anche dal PC
         val viaPc = others.map { it.first().name }.filter { it.endsWith("(USB del PC)") }

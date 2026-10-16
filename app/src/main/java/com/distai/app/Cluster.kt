@@ -112,6 +112,7 @@ class Cluster(private val ctx: Context) {
         val plan = best as SplitPlan.Ok
         log(plan.describe(coord?.name ?: "questo telefono"))
         NodeState.planInfo = plan.describe(coord?.name ?: "questo telefono")
+        NodeState.plan = plan; NodeState.planCoord = coord?.name ?: "questo telefono"
         val coordGbps = coord?.gbps ?: me.gbps
         return Start(model, info, ctxSize, coord, plan, coordGbps, plan.remote.joinToString(",") { it.endpoint })
     }

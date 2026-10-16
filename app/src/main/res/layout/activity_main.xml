@@ -12,6 +12,42 @@
         android:orientation="vertical"
         android:padding="12dp">
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <ImageView
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:contentDescription="DistAI"
+                android:src="@drawable/ic_launcher" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="12dp"
+                android:text="DistAI"
+                android:textColor="#1B2A41"
+                android:textSize="26sp"
+                android:textStyle="bold" />
+            <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+            <TextView
+                android:id="@+id/flagIt"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="8dp"
+                android:text="🇮🇹"
+                android:textSize="26sp" />
+            <TextView
+                android:id="@+id/flagEn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="8dp"
+                android:text="🇬🇧"
+                android:textSize="26sp" />
+        </LinearLayout>
+
         <!-- STATO: a colpo d'occhio se il cluster è collegato, il modello caricato e questo telefono al lavoro -->
         <LinearLayout
             android:id="@+id/statusCard"
@@ -30,7 +66,7 @@
                     android:text="●"
                     android:textColor="#9E9E9E"
                     android:textSize="18sp" />
-                <TextView style="@style/Title" android:text="STATO DEL CLUSTER" />
+                <TextView android:id="@+id/statusTitle" style="@style/Title" android:text="STATO DEL CLUSTER" />
             </LinearLayout>
             <TextView
                 android:id="@+id/statusText"
@@ -39,6 +75,12 @@
                 android:lineSpacingExtra="4dp"
                 android:textSize="14sp" />
         </LinearLayout>
+
+        <com.distai.app.ClusterView
+            android:id="@+id/clusterView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp" />
 
         <TextView
             android:id="@+id/info"

@@ -1,0 +1,71 @@
+<!doctype html><html lang="it"><meta charset="utf-8"><title>DistAI</title>
+<style>
+:root{--bg:#070b14;--card:#0d1526;--line:#16233d;--fg:#e6edf7;--mut:#8aa0c0;--acc:#38bdf8}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#0f2347,#070b14);color:var(--fg);font:15px system-ui,sans-serif;min-height:100vh}
+header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:22px;flex:1}header b{color:var(--acc)}
+.flag{background:none;border:1px solid var(--line);border-radius:8px;font-size:22px;padding:2px 8px;cursor:pointer;opacity:.5}.flag.on{opacity:1;border-color:var(--acc)}
+.wrap{display:grid;grid-template-columns:380px 1fr;gap:18px;padding:18px}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.ph{margin-top:10px}.ph .n{display:flex;justify-content:space-between;font-weight:600}
+.bar{height:10px;background:var(--line);border-radius:6px;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;transition:width .4s}
+.off{opacity:.4}.sub{color:var(--mut);font-size:13px;margin-top:4px}
+#ring{display:block;margin:auto}
+.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.kpi div{background:#0a1222;border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+.kpi b{display:block;font-size:26px;color:var(--acc)}.kpi span{color:var(--mut);font-size:12px}
+#out{white-space:pre-wrap;min-height:260px;max-height:50vh;overflow:auto;font:14px ui-monospace,monospace;margin-top:12px}
+textarea{width:100%;background:#070b14;color:inherit;border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
+.btns{display:flex;gap:8px;margin-top:8px}
+button.b{border:0;border-radius:8px;padding:9px 20px;font-weight:700;cursor:pointer;color:#06111f}
+#go{background:var(--acc)}#stop{background:#f87171}#reset{background:#94a3b8}button:disabled{opacity:.35;cursor:default}
+.live{display:inline-block;width:10px;height:10px;border-radius:50%;background:#34d399;margin-right:6px;animation:p 1s infinite}@keyframes p{50%{opacity:.25}}
+</style>
+<header><h1><b>Dist</b>AI &middot; <span data-i="live"></span></h1>
+ <button class="flag" id="fit" title="Italiano">🇮🇹</button><button class="flag" id="fen" title="English">🇬🇧</button></header>
+<div class="wrap">
+ <div>
+  <div class="card"><svg id="ring" width="230" height="230" viewBox="0 0 230 230"></svg><div class="sub" id="tot" style="text-align:center"></div></div>
+  <div id="phones"></div>
+ </div>
+ <div class="card">
+  <div class="kpi"><div><b id="k_tps">—</b><span data-i="tps"></span></div><div><b id="k_tok">0</b><span data-i="tokens"></span></div><div><b id="k_t">0.0s</b><span data-i="time"></span></div></div>
+  <textarea id="q" rows="2"></textarea>
+  <div class="btns"><button class="b" id="go"></button><button class="b" id="stop" disabled></button><button class="b" id="reset"></button></div>
+  <div id="out"></div>
+ </div>
+</div>
+<script>
+const I={it:{live:'cluster in tempo reale',tps:'token al secondo',tokens:'token generati',time:'tempo',go:'Genera',stop:'Stop',reset:'Reset',
+ q:'Scrivi una funzione Python che calcola i numeri primi fino a n.',ram:'Ogni colore = la parte di modello tenuta da un telefono (spessore = CPU)',cpuw:'CPU in uso',total:'TOTALE',mdl:'modello nei telefoni',off:'spento'},
+ en:{live:'live cluster',tps:'tokens per second',tokens:'tokens generated',time:'time',go:'Generate',stop:'Stop',reset:'Reset',
+ q:'Write a Python function that computes the primes up to n.',ram:'Each colour = the share of the model held by one phone (thickness = CPU)',cpuw:'CPU in use',total:'TOTAL',mdl:'model in the phones',off:'off'}};
+let L=localStorage.lang||'it',firstQ=true;
+const C=['#38bdf8','#a78bfa','#34d399','#fbbf24','#f87171'];let S=[];
+function lang(l){L=l;localStorage.lang=l;document.documentElement.lang=l;
+ document.querySelectorAll('[data-i]').forEach(e=>e.textContent=I[l][e.dataset.i]);
+ for(const k of['go','stop','reset'])document.getElementById(k).textContent=I[l][k];
+ const q=document.getElementById('q');if(firstQ||q.value===I.it.q||q.value===I.en.q)q.value=I[l].q;firstQ=false;
+ fit.classList.toggle('on',l=='it');fen.classList.toggle('on',l=='en');paint()}
+fit.onclick=()=>lang('it');fen.onclick=()=>lang('en');
+function ring(){const t=S.reduce((a,p)=>a+p.res_mb,0),R=84,L2=2*Math.PI*R;let o=0,h='<circle cx="115" cy="115" r="84" fill="none" stroke="#16233d" stroke-width="26"/>';
+ S.forEach((p,i)=>{if(!t||!p.res_mb)return;const l=L2*p.res_mb/t;h+=`<circle cx="115" cy="115" r="84" fill="none" stroke="${C[i%5]}" stroke-width="${26+p.cpu/8}" stroke-dasharray="${l-2} ${L2}" stroke-dashoffset="${-o}" transform="rotate(-90 115 115)" style="transition:all .4s"/>`;o+=l});
+ document.getElementById('ring').innerHTML=h+`<text x="115" y="98" text-anchor="middle" fill="#8aa0c0" font-size="12" letter-spacing="2">${I[L].total}</text><text x="115" y="128" text-anchor="middle" fill="#e6edf7" font-size="30" font-weight="700">${(t/1024).toFixed(1)} GB</text><text x="115" y="148" text-anchor="middle" fill="#8aa0c0" font-size="11">${I[L].mdl}</text>`;
+ document.getElementById('tot').textContent=I[L].ram}
+function paint(){const t=S.reduce((a,p)=>a+p.res_mb,0)||1;document.getElementById('phones').innerHTML=S.map((p,i)=>`<div class="card ph ${p.up?'':'off'}"><div class="n"><span style="color:${C[i%5]}">&#9679; ${p.name}</span><span>${(p.res_mb/1024).toFixed(2)} GB &middot; ${(100*p.res_mb/t).toFixed(0)}%</span></div><div class="bar"><i style="width:${Math.min(100,p.cpu/8)}%;background:${C[i%5]}"></i></div><div class="sub">${p.up?I[L].cpuw+' '+p.cpu.toFixed(0)+'%':I[L].off}</div></div>`).join('');ring()}
+async function tick(){try{S=await (await fetch('/stats')).json();paint()}catch(e){}}setInterval(tick,700);tick();
+let ctl=null,tm=null;
+function idle(){go.disabled=false;stop.disabled=true;clearInterval(tm);ctl=null}
+reset.onclick=()=>{if(ctl)ctl.abort();out.textContent='';k_tps.textContent='—';k_tok.textContent='0';k_t.textContent='0.0s'};
+stop.onclick=()=>{if(ctl)ctl.abort()};
+go.onclick=async()=>{out.textContent='';let n=0,t0=0;const ts=performance.now();ctl=new AbortController();go.disabled=true;stop.disabled=false;
+ tm=setInterval(()=>{k_t.textContent=((performance.now()-ts)/1000).toFixed(1)+'s'},100);
+ try{const r=await fetch('/chat',{method:'POST',signal:ctl.signal,body:JSON.stringify({stream:true,max_tokens:600,messages:[{role:'user',content:q.value}]})});
+ const rd=r.body.getReader(),d=new TextDecoder();let buf='';
+ for(;;){const{done,value}=await rd.read();if(done)break;buf+=d.decode(value,{stream:true});const ls=buf.split('\n');buf=ls.pop();
+  for(const l of ls){if(!l.startsWith('data: ')||l.includes('[DONE]'))continue;try{const c=JSON.parse(l.slice(6)).choices[0].delta.content;if(c){if(!t0)t0=performance.now();n++;out.textContent+=c;out.scrollTop=out.scrollHeight;k_tok.textContent=n;if(n>1)k_tps.textContent=(n/((performance.now()-t0)/1000)).toFixed(1)}}catch(e){}}}
+ }catch(e){}idle()};
+lang(L);
+</script>

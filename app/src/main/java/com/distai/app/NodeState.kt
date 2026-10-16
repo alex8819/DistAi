@@ -17,6 +17,9 @@ object NodeState {
     @Volatile var router: Router? = null
     /** ultimo piano del cluster (SplitPlan.describe): layer per nodo, stima e giudizio su ogni nodo */
     @Volatile var planInfo = ""
+    /** stesso piano in forma strutturata e nome del coordinatore: lo disegna ClusterView */
+    @Volatile var plan: SplitPlan.Ok? = null
+    @Volatile var planCoord = ""
 
     private const val MAX_LINES = 500
     private val lines = ArrayDeque<String>()
