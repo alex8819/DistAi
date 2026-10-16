@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/banner.png" alt="DistAI: one LLM across several Android phones" width="100%"></p>
+
 # DistAI: one LLM across several Android phones
 
 DistAI pools the RAM and CPUs of ordinary ARM64 smartphones (plus a PC or a Raspberry Pi, if you have one) to run a single language model
@@ -153,5 +155,5 @@ Measurements on other phones are welcome: add a column to the checklist in [`NOT
 
 ## License and credits
 
-- [MIT](LICENSE). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and [ggml](https://github.com/ggml-org/ggml); the patches in `native/` modify that code.
+- [MIT](LICENSE) (third-party notice: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and [ggml](https://github.com/ggml-org/ggml); the patches in `native/` modify that code.
 - Each model (Qwen, LFM2, Stable-DiffCoder, ...) has its own license: check it before redistributing.
